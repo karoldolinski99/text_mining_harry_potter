@@ -1,0 +1,307 @@
+---
+title: "<center>Text mining</center>"
+output: 
+    html_document:
+          code_folding: hide
+          toc: true
+          toc_float: true
+          number_sections: true
+          css: style.css
+---
+
+<center>
+Karol Doliński
+
+Informatyka i Ekonometria
+</center>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+ fig.width = 6,
+ fig.asp = 0.9,
+ out.width = "100%"
+)
+
+options(scipen=10000)
+
+library(broom)
+library(glmnet)
+library(tidytext)
+library(tidyverse)
+library(wordcloud)
+library(yardstick)
+```
+
+-----
+
+# Wprowadzenie
+
+Celem pracy jest analiza dwóch wybranych utworów literackich autorstwa J. K. Rowling:
+
++ _Harry Potter i Czara Ognia_ - tom IV,
++ _Harry Potter i Książę Półkrwi_ - tom VI.
+
+W badaniu zostanie przeprowadzona analiza liczebności słów, TFIDF (ang. _term frequency inverse document frequency_), a także analiza sentymentalna. Możliwe będzie pokazanie jak zmienia się sentyment wraz z kolejnymi rozdziałami powieści. Istotny etap pracy to budowa modelu klasyfikacyjnego, którego celem będzie wskazanie, z której książki pochodzi dany fragment tekstu. Warto podkreślić, iż oba utwory zostały napisane przez tą samą osobę, mają tych samych głównych bohaterów, język i styl, a więc również i wykorzystywane przez autorkę słowa są podobne. Z tego względu poprawna klasyfikacja fragmentów książki wydaje się nie być prozaiczną czynnością. 
+
+Dane pochodzą ze strony https://github.com/sharanyavb/harry-potter/tree/master/Books_Text i zostały pobrane w dniu 5 stycznia 2023 roku. Każdy wiersz w ramce danych reprezentuje jedną linijkę z książki w języku angielskim. 
+
+Przygotowując dane do analizy zdecydowano się usunąć wiersze zawierające numery stron, stopki z nazwą książki, a także usunięto puste wiersze rozdzielające akapity lub kolejne strony. Liczba obserwacji dla każdej książki (linijek tekstu w książce) jest podobna - jest to około 24 tys. linijek w utworze _Harry Potter i Czara Ognia_ oraz około 21,5 tys. w _Harry Potter i Książę Półkrwi_. 
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# reading data
+read_txt_file <- function(file_name){
+  connection <- file(file_name, open = "r")
+  lines <- readLines(connection)
+  dataset <- as.data.frame(matrix(NA, length(lines), 1))
+  for (i in 1:length(lines)){
+    dataset[i,1] <- (lines[i])
+  }
+  close(connection)
+  colnames(dataset) <- "text"
+  return(dataset)
+}
+
+book1 <- read_txt_file("HP4.txt")
+book2 <- read_txt_file("HP6.txt")
+
+# removing pages and footers and empty rows
+book1 <- book1 %>% filter((str_detect(text, "Page.") == F) & (text != "") &
+                          (str_detect(text, "Harry Potter and the Goblet of Fire") == F)) %>%
+                   mutate(title = "Harry Potter IV", text = str_replace(text, "’", "'"))
+book2 <- book2 %>% filter((str_detect(text, "Page.") == F) & (text != "") &
+                          (str_detect(text, "Harry Potter and the Half Blood Prince") == F)) %>%
+                  mutate(title = "Harry Potter VI", text = str_replace(text, "’", "'"))
+
+books <- rbind.data.frame(book1, book2) %>% mutate(document = row_number())
+```
+
+-----
+
+# Liczebność słów
+
+Przed analizą liczebności słów zdecydowano się usunąć takie, które najczęściej powtarzają się w języku, a niewiele by wnosiły do badania - podstawowe czasowniki (np. mieć, być, powiedzieć), zaimki czy spójniki. Wykorzystano do tego `stop_words` z pakietu `tidytext`.
+
+Nie jest zaskoczeniem, że najpopularniejsze słowa to imiona głównych postaci. W obu książkach imię tytułowego bohatera pojawia się kilka tysięcy razy. Ponadto widoczne są typowe słowa dla tego typu powieści jak różdżka (ang. _wand_) czy profesor (ang. _professor_). Większe różnice można dostrzec porównując bohaterów drugoplanowych, którzy pojawiają się tylko w jednym tomie jak np. _Moody_ czy _Slughorn_. Pojawiają się też „zwykłe” słowa, których częste występowanie jest oczywiste dla osób po lekturze książek. Jest to np. słowo głos (ang. _voice_), które w szóstym tomie pojawia się często i odnosi się do głosów jakie w swojej głowie słyszy główny bohater. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, out.width="70%", fig.align="center"}
+books %>%
+  unnest_tokens(word, text) %>%
+  mutate(word = str_replace(word, "'s", "")) %>%
+  anti_join(rbind(stop_words, c("looked", "told"))) %>%
+  group_by(word) %>%
+  ungroup() %>%
+  count(title, word, sort = TRUE) %>%
+  group_by(title) %>%
+  top_n(25) %>%
+  ungroup() %>%
+  ggplot(aes(reorder_within(word, n, title), n, fill = title)) +
+  geom_col(show.legend = FALSE) +
+  scale_x_reordered() +
+  coord_flip() +
+  facet_wrap(~title, scales = "free") +
+  labs(x = NULL, y = "Liczebności słów", title = "Najczęściej występujące słowa") +
+  theme_bw()
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="50%"}
+books %>%
+  unnest_tokens(word, text) %>%
+  mutate(word = str_replace(word, "'s", "")) %>%
+  anti_join(rbind(stop_words, c("looked", "told"))) %>%
+  filter(title == "Harry Potter IV") %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100))
+
+books %>%
+  unnest_tokens(word, text) %>%
+  mutate(word = str_replace(word, "'s", "")) %>%
+  anti_join(rbind(stop_words, c("looked", "told"))) %>%  
+  filter(title == "Harry Potter VI") %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100))
+```
+<center>Chmury słów: _Harry Potter IV_ (po lewej) i _Harry Potter VI_ (po prawej) </center>
+-----
+
+# TFIDF
+
+Metoda badania liczebności słów z pewnością nie jest niczym zaawansowanym, nawet po usunięciu _stop words_. Innym podejściem jest metoda ważenia częstości termów – odwrotnej częstość w dokumentach TFIDF (ang. TF – _term frequency_, IDF – _inverse document frequency_). Polega na tym, że słowa powszechne otrzymują mniejszą wagę niż słowa, które nie są zbyt często używane. Statystyka TFIDF jest właściwa, jeśli chce się zmierzyć jak ważne jest słowo w książce, pod warunkiem, jeśli ta książka pochodzi z jakiejś serii czy sagi. Nie jest to właściwa miara, jeśli badanie dotyczy dwóch kompletnie różnych tytułów, np. powieści fantastycznej i artykułu popularnonaukowego. 
+
+TFIDF nie wskazuje imion trzech głównych bohaterów jako istotne dla danego tytułu, natomiast drugoplanowe postacie występujące tylko w jednym tomie są pokazane jako te z największą wartością statystyki. W przypadku tomu szóstego wyróżnia się takie osoby jak: _Slughorn_ czy _Scrimgeour_, gdy w tomie czwartym jest to między innymi _Bagman_. Większość istotnych słów to nazwy własne, do których zaliczają się imiona czy nazwy wymyślonych przedmiotów czy lokalizacji. Natomiast pojawiają się też "zwykłe" słowa. W czwartej części, która w dużej mierze opisuje turniej trójmagiczny jako istotne wskazano słowa _champion_ i _judges_ oraz _tasks_ (wszystkie związane z turniejem). 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, out.width="70%", fig.align="center"}
+books_TFIDF <- books %>%
+  unnest_tokens(word, text) %>%
+  mutate(word = str_replace(word, "'s", "")) %>%
+  count(title, word) %>%
+  bind_tf_idf(word, title, n) %>%
+  group_by(title) %>%
+  slice_max(tf_idf, n = 25) %>%
+  ungroup()
+  
+books_TFIDF %>%
+  ggplot(aes(tf_idf, fct_reorder(word, tf_idf), fill = title)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~title, ncol = 2, scales = "free") +
+  labs(title = "Istota słów wg TFIDF", x = "TFIDF", y = NULL) +
+  theme_bw()
+```
+
+-----
+
+# Analiza sentymentalna
+
+Następnym etapem badania było wykonanie analizy sentymentalnej z wykorzystaniem trzech popularnych leksykonów bazujących na pojedynczych słowach (unigramach) z języka angielskiego:
+
++ leksykon _AFINN_ – przypisywanie punktów od -5 (negatywne emocje) do 5 (pozytywne);
++ leksykon _bing_ – prosta klasyfikacja słów na pozytywne i negatywne;
++ leksykon _nrc_ – klasyfikacja binarna na kategorie pozytywne, negatywne, złość, wyczekiwanie, wstręt, strach, radość, smutek, zaskoczenie i zaufanie.
+
+Należy podkreślić, iż wykorzystanie unigramów nie jest rozwiązaniem doskonałym, ponieważ tak przeprowadzona analiza nie odczyta przeczeń lub ironii czy sarkazmu. Ponadto pojedyncze słowo może mieć więcej niż jedno znaczenie, np. słowo _miss_ w języku angielskim oznacza zarówno „niezamężną kobietę” (słowo neutralne) jak i „tęsknić”. 
+
+Analizując sentyment warto dokonać porównania na kilku płaszczyznach. Po pierwsze należy zwrócić uwagę na różnice w wykrywanym sentymencie przy wykorzystaniu różnych leksykonów. W obu przypadkach sentyment jest postrzegany dosyć podobnie przez wszystkie trzy leksykony – zarówno najniższe jak i najwyższe wartości występują w podobnych momentach. Warto również omówić kształtowanie się sentymentu w czasie na przestrzeni książki. W przypadku obu tomów można zauważyć, iż pod koniec utworu jest spora kumulacja negatywnych emocji – widoczne zwłaszcza w szóstym tomie serii. Jest do dosyć charakterystyczne dla książek fantastycznych i nie tylko, gdzie raczej pod koniec książki następuje kulminacyjny moment, w większości o negatywnym sentymencie. W obu książkach nie dominuje sentyment pozytywny. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, out.width="90%", fig.align="center"}
+tidy_books_sentiment <- books %>%
+  group_by(title) %>%
+  mutate(linenumber = row_number()) %>%
+  ungroup() %>%
+  unnest_tokens(word, text) 
+
+afinn <- tidy_books_sentiment %>% 
+  inner_join(get_sentiments("afinn")) %>% 
+  group_by(title, index = linenumber %/% 50) %>% 
+  summarise(sentiment = sum(value)) %>% 
+  mutate(method = "AFINN")
+
+bing <- tidy_books_sentiment %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(title, index = linenumber %/% 50, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>% 
+  mutate(sentiment = positive - negative, method = "Bing") %>% 
+  select(-positive, -negative)
+
+nrc <- tidy_books_sentiment %>% 
+  inner_join(get_sentiments("nrc") %>% 
+  filter(sentiment %in% c("positive", "negative"))) %>%
+  count(title, index = linenumber %/% 50, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>% 
+  mutate(sentiment = positive - negative, method = "NRC") %>%
+  select(-positive, -negative)
+
+rbind(afinn, bing, nrc) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(method~title, ncol = 2, scales = "free") +
+  labs(x = "Indeks", y = "Sentyment", title = "Analiza sentymentalna") +
+  theme_bw() +
+  theme(strip.text = element_text(size = 5))
+```
+
+-----
+
+# Klasyfikacja
+
+Kolejnym etapem badania jest budowa modelu uczenia maszynowego. Wybrano model pozwalający na binarną klasyfikację, którego celem będzie analiza i stwierdzenie, z którego z badanych tomów _Harry’ego Pottera_ pochodzi dana linijka tekstu książki. Stopień trudności problemu na pewno zwiększa fakt, iż oba utwory napisała ta sama osoba, a więc można przypuszczać, że styl, wykorzystywane słowa są podobne, jak również główni bohaterowie są ci sami. 
+
+W pierwszym kroku podzielono zbiór danych na uczący i testowy w proporcji 80:20 i przekształcono go do macierzy rzadkiej (ang. _sparse matrix_). Następnie został zbudowany model regresji logistycznej z regularyzacją LASSO (ang. _logistic regression with LASSO regularization_). Jest to jedna z popularniejszych metod do rozwiązywania problemów klasyfikacji tekstu, ponieważ jest nie tylko skuteczna, ale również wskazuje, które słowa są ważne z punktu widzenia rozwiązywanego problemu. Zdecydowano się zastosować również _k_-krotny sprawdzian krzyżowy (<i>k</i>=20). Zbiór danych uznano za zbalansowany (około 53% linijek tekstu pochodzi z książki _Harry Potter i Czara Ognia_) i nie wykonywano żadnych operacji mających na celu jeszcze większe wyrównanie liczby obserwacji dla każdej książki. 
+
+Warto zauważyć, że wiele współczynników mających największy wpływ na wyniki modelu to słowa wskazane przez statystykę TFIDF jako istotne w danym utworze. Dodatkowo są to w większości nazwy własne takie jak imiona czy nazwiska bohaterów. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, out.width="75%", fig.align="center"}
+tidy_books <- books %>%
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words) %>%
+  group_by(word) %>%
+  ungroup()
+
+set.seed(1234)
+sample <- sample(c(T, F), nrow(books), replace=TRUE, prob=c(0.8, 0.2))
+train_data <- books[sample, ] %>% select(document)
+test_data <- books[!sample, ] %>% select(document)
+
+sparse_matrix <- tidy_books %>%
+  count(document, word) %>%
+  inner_join(train_data) %>%
+  cast_sparse(document, word, n)
+
+books_sparse_matrix <- data_frame(document = as.integer(rownames(sparse_matrix))) %>%
+  left_join(books %>% select(document, title))
+
+model <- cv.glmnet(sparse_matrix, 
+                   books_sparse_matrix$title == "Harry Potter IV",
+                   family = "binomial",
+                   nfolds = 20,
+                   type.measure = "auc")
+
+coefficients <- model$glmnet.fit %>%
+  tidy() %>%
+  filter(lambda == model$lambda.1se)
+
+coefficients %>%
+  group_by(estimate > 0) %>%
+  top_n(20, abs(estimate)) %>%
+  ungroup() %>%
+  ggplot(aes(fct_reorder(term, estimate), estimate, fill = estimate > 0)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  labs(x = NULL, title = "Współczynniki o największym wpływie na prawdopodobieństwo")
+```
+
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, out.width="50%"}
+intercept <- coefficients[coefficients$term == "(Intercept)",]$estimate
+
+classifications <- tidy_books %>%
+  inner_join(test_data) %>%
+  inner_join(coefficients, by = c("word" = "term")) %>%
+  group_by(document) %>%
+  summarize(sum = sum(estimate)) %>%
+  mutate(probability = plogis(intercept + sum),
+         prediction = as.factor(if_else(probability > 0.5, "Harry Potter IV", "Harry Potter VI"))) %>%
+  left_join(books %>% select(title, document), by = "document") %>%
+  mutate(title = as.factor(title))
+
+conf_mat_plot <- conf_mat(classifications, truth = title, estimate = prediction) %>%
+  autoplot(type = "heatmap") +
+  labs(title="Macierz pomyłek", x="Prawdziwa wartość", y = "Predykcja")
+
+roc_curve_plot <- roc_curve(classifications, truth = title, probability) %>%
+  autoplot() +
+  labs(title = "Krzywa ROC", x = "1 - swoistość", y = "czułość")
+```
+
+Jakość wyestymowanego modelu została przedstawiona z wykorzystaniem macierzy pomyłek. Dokładność wyniosła niecałe 71%. 
+Warto zaznaczyć, iż model ten lepiej prognozował klasę pozytywną, czyli tom IV (czułość: 78%) niż negatywną, czyli tom VI (swoistość: 62%).
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="50%"}
+conf_mat_plot
+roc_curve_plot
+```
+
+
+-----
+
+# Podsumowanie
+
+W badaniu została przeprowadzona analiza liczebności słów, która wskazała najpopularniejsze słowa w obu książkach po usunięciu _stop words_. Były to oczywiście imiona głównych bohaterów czy inne nazwy własne, ale również słowa takie jak różdżka czy profesor kojarzące się ze szkołą magii, która jest głównym miejscem akcji w powieściach. Dzięki statystyce TFIDF było możliwe wskazanie słów, które są ważne z punktu widzenia danej książki. Tymi wyrazami były nie tylko imiona drugoplanowych bohaterów, którzy występują tylko w danym tytule, ale również słowa charakterystyczne dla fabuły danej książki. W przypadku czwartego tomu były to _champion_, _judges_, _compete_ - słowa odnoszące się do głównego wątku, czyli turnieju trójmagicznego. Natomiast w części szóstej - _prince_ i _prophecy_ - słowa które najprawdopodobniej zostałyby wskazane przez człowieka po przeczytaniu utworu. Trudno dopatrzeć się przypadku, by któreś z podanych słów znalazło się na liście przypadkowo. 
+
+Wyniki analizy sentymentalnej z wykorzystaniem trzech leksykonów dały podobne do siebie wyniki. Warto zauważyć, iż pod koniec utworu sentyment był stosunkowo najniższy – jest to zjawisko częste dla powieści, gdy w ostatnich rozdziałach występuje kulminacja akcji, której często towarzyszą negatywne emocje. Tak jest też w książkach z serii _Harry Potter_. Zjawisko to jest ono szczególnie uwypuklone dla szóstego tomu. 
+
+Ostatnim etapem badania było stworzenie modelu klasyfikacyjnego, którego zadaniem było rozpoznawanie z jakiego utworu pochodzi dana linijka tekstu. Mogłoby się wydawać, że otrzymany wynik nie jest najlepszy, ponieważ dokładność modelu wyniosła około 70%. Natomiast wziąwszy pod uwagę, że oba utwory zostały napisane przez tą samą osobę (a więc w podobnym stylu, z użyciem podobnego języka), dotyczą tych samych głównych bohaterów, otrzymany wynik można uznać za dobry i zadowalający. Ponadto należy zaznaczyć, iż klasyfikacja została wykonana w oparciu o tylko jedną linijkę tekstu. Rozszerzeniem modelu, które można by wziąć pod uwagę przy ewentualnym rozszerzaniu badania w przyszłości, mogłoby być uznanie za obserwację nie jednej linijki tekstu, a całego akapitu. Niemniej takie rozwiązanie generowałoby problem, jak traktować dialogi, które same stanowią akapity. Mogłoby się wtedy okazać, iż jeden akapit zawiera wielozdaniowy opis, a drugi zaledwie jedno czy dwa słowa. 
+
+
+
+-----
+
+# Źródła 
+
+
+1. E. Hvitfeldt, J. Silge, _Supervised Machine Learning for Text Analysis in R_, New York, 2021.
+2. https://www.tidytextmining.com/index.html [dostęp w dniach 01-10 stycznia 2023]
+3. https://bookdown.org/Maxine/tidy-text-mining/ [dostęp w dniach 01-10 stycznia 2023]
+4. https://juliasilge.com [dostęp w dniach 01-10 stycznia 2023]
+
+
