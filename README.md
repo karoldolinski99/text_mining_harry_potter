@@ -1,6 +1,7 @@
 # text_mining_harry_potter
 
 The aim of the work is to analyze two selected books written by J.K. Rowling:
+
 Harry Potter and the Goblet of Fire - Volume IV,
 Harry Potter and the Half-Blood Prince - Volume VI.
 
